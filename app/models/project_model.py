@@ -28,9 +28,7 @@ class ProjectModel:
                 "user_id": ObjectId(user_id),
                 "name": name,
                 "file_path": file_path,
-                "datatype_mapping": [],
-                "name_of_the_column_with_tags": "",
-                "name_of_the_column_with_tag_type": ""
+                "datatype_mapping": []
             }
             project_data = add_timestamps(project_data)
             result = self.collection.insert_one(project_data)
@@ -39,23 +37,19 @@ class ProjectModel:
             logger.error(f"Database error while creating project: {e}")
             return None
 
-    def update_project(self, project_id, datatype_mapping, column_with_tags, column_with_tag_type):
-        """Update project with datatype mapping and column information
+    def update_project(self, project_id, datatype_mapping):
+        """Update project with datatype mapping information
         
         Args:
             project_id (str): ID of the project to update
             datatype_mapping (list): List of dictionaries containing column_name and datatype
-            column_with_tags (str): Name of the column containing tags
-            column_with_tag_type (str): Name of the column containing tag types
             
         Returns:
             bool: True if successful, False otherwise
         """
         try:
             update_data = {
-                "datatype_mapping": datatype_mapping,
-                "name_of_the_column_with_tags": column_with_tags,
-                "name_of_the_column_with_tag_type": column_with_tag_type
+                "datatype_mapping": datatype_mapping
             }
             update_data = add_timestamps(update_data, is_update=True)
             

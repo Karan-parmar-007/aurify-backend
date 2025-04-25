@@ -31,7 +31,7 @@ def get_all_columns():
             'message': 'An unexpected error occurred'
         }), 500
 
-@admin_bp.route('/add_system_columns', methods=['POST'])
+@admin_bp.route('/add_system_column', methods=['POST'])
 def add_column():
     """Add a new system column
     
@@ -85,7 +85,7 @@ def add_column():
             'message': 'An unexpected error occurred'
         }), 500
 
-@admin_bp.route('/update_system_columns/<column_id>', methods=['PUT'])
+@admin_bp.route('/update_system_column/<column_id>', methods=['PUT'])
 def update_column(column_id):
     """Update a system column
     
@@ -136,7 +136,7 @@ def update_column(column_id):
             'message': 'An unexpected error occurred'
         }), 500
 
-@admin_bp.route('/delete_system_columns/<column_id>', methods=['DELETE'])
+@admin_bp.route('/delete_system_column/<column_id>', methods=['DELETE'])
 def delete_column(column_id):
     """Delete a system column
     
