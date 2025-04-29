@@ -108,3 +108,17 @@ class SystemColumnModel:
         except PyMongoError as e:
             logger.error(f"Database error while getting system column: {e}")
             return None 
+        
+    def get_all_column_names(self):
+        """Get only the names of all system columns
+        
+        Returns:
+            list|None: List of column names, or None on error
+        """
+        try:
+            columns = self.collection.find({}, {"column_name": 1, "_id": 0})
+            column_names = [column["column_name"] for column in columns if "column_name" in column]
+            return column_names
+        except PyMongoError as e:
+            logger.error(f"Database error while getting column names: {e}")
+            return None

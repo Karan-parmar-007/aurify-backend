@@ -166,3 +166,29 @@ def delete_column(column_id):
             'status': 'error',
             'message': 'An unexpected error occurred'
         }), 500 
+    
+@admin_bp.route('/get_system_column_names', methods=['GET'])
+def get_column_names_only():
+    """Return only the names of all system columns using the model method
+    
+    Returns:
+        JSON response with list of column names
+    """
+    try:
+        column_names = system_column_model.get_all_column_names()
+        if column_names is not None:
+            return jsonify({
+                'status': 'success',
+                'column_names': column_names
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to fetch column names'
+            }), 500
+    except Exception as e:
+        logger.error(f"Error in get_column_names_only: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': 'An unexpected error occurred'
+        }), 500

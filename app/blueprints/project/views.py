@@ -490,3 +490,4 @@ def download_file(file_path):
             'status': 'error',
             'message': 'An unexpected error occurred'
         }), 500
+    
