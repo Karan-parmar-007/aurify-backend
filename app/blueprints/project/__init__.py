@@ -6,7 +6,7 @@ from flask import Blueprint
 # Create Blueprint instance for user management routes
 # - Name: 'user' (used for URL routing and reverse URL lookups)
 # - Package: Current Python package (__name__ provides package context)
-admin_bp = Blueprint('admin', __name__)
+project_bp = Blueprint('project', __name__)
 
 # Import views after blueprint creation to:
 # 1. Prevent circular dependency issues

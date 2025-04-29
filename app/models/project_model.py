@@ -12,7 +12,26 @@ class ProjectModel:
         """Initialize the ProjectModel with the 'projects' collection"""
         self.collection = db["projects"]
 
-    def create_project(self, user_id, name, file_path):
+    def get_project(self, project_id):
+        """Get a project by its ID
+        
+        Args:
+            project_id (str): ID of the project to retrieve
+            
+        Returns:
+            dict|None: Project data as dictionary, or None if not found or error
+        """
+        try:
+            project = self.collection.find_one({"_id": ObjectId(project_id)})
+            if project:
+                project["_id"] = str(project["_id"])
+                project["user_id"] = str(project["user_id"])
+            return project
+        except PyMongoError as e:
+            logger.error(f"Database error while getting project: {e}")
+            return None
+
+    def create_project(self, user_id, name, file_path, remove_duplicates):
         """Create a new project in the database with initial parameters
         
         Args:
@@ -28,7 +47,8 @@ class ProjectModel:
                 "user_id": ObjectId(user_id),
                 "name": name,
                 "file_path": file_path,
-                "datatype_mapping": []
+                "datatype_mapping": {},
+                "remove_duplicates": remove_duplicates,
             }
             project_data = add_timestamps(project_data)
             result = self.collection.insert_one(project_data)
@@ -76,4 +96,25 @@ class ProjectModel:
             return result.deleted_count > 0
         except PyMongoError as e:
             logger.error(f"Database error while deleting project: {e}")
-            return False 
+            return False
+
+    def get_projects_by_user(self, user_id):
+        """Fetch all projects for a given user ID
+        
+        Args:
+            user_id (str): ID of the user whose projects are to be fetched
+            
+        Returns:
+            list: List of projects as dictionaries, or an empty list on error
+        """
+        try:
+            projects = self.collection.find({"user_id": ObjectId(user_id)})
+            project_list = []
+            for project in projects:
+                project["_id"] = str(project["_id"])
+                project["user_id"] = str(project["user_id"])
+                project_list.append(project)
+            return project_list
+        except PyMongoError as e:
+            logger.error(f"Database error while fetching projects for user {user_id}: {e}")
+            return []

@@ -1,5 +1,6 @@
 import os
-from flask import request, jsonify
+import pandas as pd
+from flask import request, jsonify, send_file
 from app.blueprints.project import project_bp
 from app.models.project_model import ProjectModel
 from app.models.user_model import UserModel
@@ -11,28 +12,38 @@ project_model = ProjectModel()
 user_model = UserModel()
 
 # Configure upload folder
-UPLOAD_FOLDER = os.path.join(os.getcwd(), 'dataset')
+UPLOAD_FOLDER = os.path.join(os.getcwd(), 'datasets')
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-def save_file(file, filename):
-    """Save uploaded file to the dataset folder
+def save_file(file, filename, project_name):
+    """Save uploaded file to a project-specific folder in the datasets directory
     
     Args:
         file: File object from request
         filename: Desired filename
+        project_name: Name of the project (used as folder name)
         
     Returns:
         tuple: (bool, str) - (success status, file path or error message)
     """
     try:
-        # Secure the filename
+        # Secure the project name and filename
+        secure_project_name = secure_filename(project_name)
         secure_name = secure_filename(filename)
-        file_path = os.path.join(UPLOAD_FOLDER, secure_name)
         
-        # Check if file already exists
-        if os.path.exists(file_path):
-            return False, "File with this name already exists. Please rename the file."
+        # Create project-specific folder path
+        project_folder = os.path.join(UPLOAD_FOLDER, secure_project_name)
+        
+        # Check if project folder already exists
+        if os.path.exists(project_folder):
+            return False, "A project with this name already exists. Please choose a different project name."
+        
+        # Create project folder
+        os.makedirs(project_folder)
+        
+        # Create file path within project folder
+        file_path = os.path.join(project_folder, secure_name)
         
         # Save the file
         file.save(file_path)
@@ -71,6 +82,7 @@ def upload_dataset():
         # Get other form data
         name = request.form.get('name')
         user_id = request.form.get('user_id')
+        remove_duplicates = request.form.get('remove_duplicates', 'false').lower() == 'true'
         
         # Validate required fields
         if not all([name, user_id]):
@@ -80,7 +92,7 @@ def upload_dataset():
             }), 400
             
         # Save file and get path
-        success, result = save_file(file, file.filename)
+        success, result = save_file(file, file.filename, name)
         if not success:
             return jsonify({
                 'status': 'error',
@@ -91,7 +103,8 @@ def upload_dataset():
         project_id = project_model.create_project(
             user_id=user_id,
             name=name,
-            file_path=result
+            file_path=result,
+            remove_duplicates=remove_duplicates
         )
         
         if project_id:
@@ -120,7 +133,8 @@ def upload_dataset():
 
 @project_bp.route('/update_project/<project_id>', methods=['PUT'])
 def update_project(project_id):
-    """Update project datatype mapping
+    """
+    Update project datatype mapping
     
     Args:
         project_id (str): ID of the project to update
@@ -186,15 +200,22 @@ def delete_project(project_id):
                 'message': 'Project not found'
             }), 404
             
-        # Delete file from local storage
+        # Delete project folder and its contents
         try:
-            if os.path.exists(project['file_path']):
-                os.remove(project['file_path'])
+            project_folder = os.path.dirname(project['file_path'])
+            if os.path.exists(project_folder):
+                # Remove all files in the project folder
+                for file in os.listdir(project_folder):
+                    file_path = os.path.join(project_folder, file)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                # Remove the project folder itself
+                os.rmdir(project_folder)
         except Exception as e:
-            logger.error(f"Error deleting file: {str(e)}")
+            logger.error(f"Error deleting project folder: {str(e)}")
             return jsonify({
                 'status': 'error',
-                'message': 'Error deleting file'
+                'message': 'Error deleting project folder'
             }), 500
             
         # Delete project from database
@@ -218,4 +239,162 @@ def delete_project(project_id):
         return jsonify({
             'status': 'error',
             'message': 'An unexpected error occurred'
-        }), 500 
+        }), 500
+
+@project_bp.route('/get_projects/<user_id>', methods=['GET'])
+def get_projects(user_id):
+    """Fetch all projects for a given user ID
+    
+    Args:
+        user_id (str): ID of the user whose projects are to be fetched
+        
+    Returns:
+        JSON response with project details or downloadable file
+    """
+    try:
+        # Fetch projects from the database
+        projects = project_model.get_projects_by_user(user_id)
+        if not projects:
+            return jsonify({
+                'status': 'error',
+                'message': 'No projects found for the user'
+            }), 404
+        
+        # Return project details
+        return jsonify({
+            'status': 'success',
+            'projects': projects
+        }), 200
+    except Exception as e:
+        logger.error(f"Error in get_projects: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': 'An unexpected error occurred'
+        }), 500
+
+@project_bp.route('/get_project_data/<project_id>', methods=['GET'])
+def get_project_data(project_id):
+    """
+    Fetch project data, read the file, and return column names and first 10 rows
+    
+    Args:
+        project_id (str): ID of the project to fetch data for
+        
+    Returns:
+        JSON response with column names and first 10 rows of the file
+    """
+    try:
+        # Fetch project details from the database
+        project = project_model.get_project(project_id)
+        if not project:
+            return jsonify({
+                'status': 'error',
+                'message': 'Project not found'
+            }), 404
+
+        # Get the file path from the project data
+        file_path = project.get('file_path')
+        logger.debug(f"File path being used: {file_path}")
+        
+        if not file_path or not os.path.exists(file_path):
+            logger.error(f"File does not exist at path: {file_path}")
+            return jsonify({
+                'status': 'error',
+                'message': 'File not found'
+            }), 404
+
+        def clean_and_preview(file_path, num_rows=10, is_excel=False):
+            """Helper function to clean and preview file content."""
+            if is_excel:
+                if file_path.endswith('.xlsx'):
+                    engine = "openpyxl"
+                elif file_path.endswith('.xls'):
+                    engine = "xlrd"
+                else:
+                    raise ValueError("Unsupported Excel file extension")
+                df = pd.read_excel(file_path, engine=engine, dtype=str, nrows=num_rows)
+            else:
+                try:
+                    df = pd.read_csv(file_path, dtype=str, nrows=num_rows, encoding="utf-8")
+                except UnicodeDecodeError:
+                    df = pd.read_csv(file_path, dtype=str, nrows=num_rows, encoding="ISO-8859-1")
+
+            # Convert column names to strings to handle datetime objects
+            df.columns = [str(col) for col in df.columns]
+
+            # Replace NaN with None for JSON compatibility
+            df = df.where(pd.notnull(df), '')
+
+            # Convert all values to strings to ensure JSON serialization
+            df = df.astype(str).replace("nan", '')
+
+            # Return preview as list of dictionaries
+            return df.head(num_rows).to_dict(orient="records")
+
+        # Read and preview the file
+        try:
+            if file_path.endswith(".xlsx"):
+                try:
+                    rows = clean_and_preview(file_path, num_rows=10, is_excel=True)
+                except Exception as e:
+                    logger.warning(f"Excel read failed, trying CSV fallback: {e}")
+                    rows = clean_and_preview(file_path, num_rows=10, is_excel=False)
+            elif file_path.endswith(".csv"):
+                rows = clean_and_preview(file_path, num_rows=10, is_excel=False)
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Unsupported file format'
+                }), 400
+        except Exception as e:
+            logger.error(f"Error reading file: {str(e)}")
+            return jsonify({
+                'status': 'error',
+                'message': 'Error reading the file',
+                'details': str(e)
+            }), 500
+
+        # Return the data to the frontend
+        return jsonify({
+            'status': 'success',
+            'columns': list(rows[0].keys()) if rows else [],
+            'rows': rows
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_project_data: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': 'An unexpected error occurred',
+            'details': str(e)
+        }), 500
+
+@project_bp.route('/download_file/<path:file_path>', methods=['GET'])
+def download_file(file_path):
+    """Download a file from the server
+    
+    Args:
+        file_path (str): Path to the file to be downloaded
+        
+    Returns:
+        File response or error message
+    """
+    try:
+        # Normalize the file path
+        normalized_path = os.path.normpath(file_path)
+
+        # Ensure the file exists
+        if not os.path.exists(normalized_path):
+            return jsonify({
+                'status': 'error',
+                'message': 'File not found'
+            }), 404
+        
+        # Send the file for download
+        return send_file(normalized_path, as_attachment=True)
+    except Exception as e:
+        logger.error(f"Error in download_file: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': 'An unexpected error occurred'
+        }), 500
