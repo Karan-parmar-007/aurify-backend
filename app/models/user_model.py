@@ -17,8 +17,6 @@ class UserModel:
                 "email": email,
                 "password": password,
                 "projects": [],
-                "version_number": 0,
-                "version_info": []
             }
             user_data = add_timestamps(user_data)
             result = self.collection.insert_one(user_data)

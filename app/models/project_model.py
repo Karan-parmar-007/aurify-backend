@@ -49,6 +49,8 @@ class ProjectModel:
                 "file_path": file_path,
                 "datatype_mapping": {},
                 "remove_duplicates": remove_duplicates,
+                "version_info": [],
+                "version_number": 0,
             }
             project_data = add_timestamps(project_data)
             result = self.collection.insert_one(project_data)
@@ -118,3 +120,59 @@ class ProjectModel:
         except PyMongoError as e:
             logger.error(f"Database error while fetching projects for user {user_id}: {e}")
             return []
+        
+    def update_all_fields(self, project_id, update_fields):
+        """
+        Update all modifiable fields of a project.
+
+        Args:
+            project_id (str): ID of the project to update
+            update_fields (dict): Dictionary containing the fields to update
+
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        try:
+            # Ensure '_id' and 'user_id' are not updated through this method
+            update_fields.pop("_id", None)
+            update_fields.pop("user_id", None)
+
+            update_fields = add_timestamps(update_fields, is_update=True)
+
+            result = self.collection.update_one(
+                {"_id": ObjectId(project_id)},
+                {"$set": update_fields}
+            )
+            return result.modified_count > 0
+        except PyMongoError as e:
+            logger.error(f"Database error while updating all fields of project {project_id}: {e}")
+            return False
+
+
+    def append_version_info(self, project_id, version_entry: dict) -> bool:
+        """
+        Append a new version entry to the version_info list of a project.
+
+        Args:
+            project_id (str): ID of the project to update
+            version_entry (dict): Dictionary to append to version_info (e.g., {"v1": "version_id"})
+
+        Returns:
+            bool: True if the append operation is successful, False otherwise
+        """
+        try:
+            update_data = {
+                "updated_at": datetime.now()
+            }
+
+            result = self.collection.update_one(
+                {"_id": ObjectId(project_id)},
+                {
+                    "$push": {"version_info": version_entry},
+                    "$set": update_data
+                }
+            )
+            return result.modified_count > 0
+        except PyMongoError as e:
+            logger.error(f"Database error while appending version_info to project {project_id}: {e}")
+            return False

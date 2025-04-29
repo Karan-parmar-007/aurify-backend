@@ -6,6 +6,7 @@ from app.models.project_model import ProjectModel
 from app.models.user_model import UserModel
 from app.utils.logger import logger
 from werkzeug.utils import secure_filename
+from app.models.version_model import VersionModel
 
 # Initialize models
 project_model = ProjectModel()
@@ -54,16 +55,7 @@ def save_file(file, filename, project_name):
 
 @project_bp.route('/upload_dataset', methods=['POST'])
 def upload_dataset():
-    """Upload a file and create a new project
-    
-    Request form data:
-    - file: The file to upload
-    - name: Project name
-    - user_id: User ID who owns the project
-    
-    Returns:
-        JSON response with status and project details
-    """
+    """Upload a file, create a project, process the dataset, and manage versions."""
     try:
         # Check if file is present in request
         if 'file' not in request.files:
@@ -71,26 +63,26 @@ def upload_dataset():
                 'status': 'error',
                 'message': 'No file part in the request'
             }), 400
-            
+
         file = request.files['file']
         if file.filename == '':
             return jsonify({
                 'status': 'error',
                 'message': 'No file selected'
             }), 400
-            
+
         # Get other form data
         name = request.form.get('name')
         user_id = request.form.get('user_id')
         remove_duplicates = request.form.get('remove_duplicates', 'false').lower() == 'true'
-        
+
         # Validate required fields
         if not all([name, user_id]):
             return jsonify({
                 'status': 'error',
                 'message': 'Missing required fields: name and user_id'
             }), 400
-            
+
         # Save file and get path
         success, result = save_file(file, file.filename, name)
         if not success:
@@ -98,37 +90,137 @@ def upload_dataset():
                 'status': 'error',
                 'message': result
             }), 400
-            
-        # Create project
+
+        # Step 1: Create the project in the database
         project_id = project_model.create_project(
             user_id=user_id,
             name=name,
             file_path=result,
             remove_duplicates=remove_duplicates
         )
-        
-        if project_id:
-            # Add project to user's projects array
-            user_model.add_project(user_id, name, project_id)
-            
-            return jsonify({
-                'status': 'success',
-                'message': 'File uploaded and project created successfully',
-                'project_id': project_id
-            }), 201
-        else:
-            # If project creation fails, delete the uploaded file
+        if not project_id:
             os.remove(result)
             return jsonify({
                 'status': 'error',
                 'message': 'Failed to create project'
             }), 500
-            
+
+        # Step 2: Create version 0
+        version_model = VersionModel()
+        version_0_id = version_model.create_version(
+            project_id=project_id,
+            description="Initial version",
+            files_path=result
+        )
+
+
+        if not version_0_id:
+            os.remove(result)
+            project_model.delete_project(project_id)
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to create version 0'
+            }), 500
+
+        version_update = project_model.append_version_info(
+            project_id=project_id,
+            version_entry={"v0": version_0_id}
+        )
+
+        # Step 3: Read the dataset
+        try:
+            if result.endswith('.xlsx'):
+                df = pd.read_excel(result, dtype=str)
+            elif result.endswith('.csv'):
+                df = pd.read_csv(result, dtype=str)
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Unsupported file format'
+                }), 400
+        except Exception as e:
+            logger.error(f"Error reading file: {str(e)}")
+            return jsonify({
+                'status': 'error',
+                'message': 'Error reading the file',
+                'details': str(e)
+            }), 500
+
+        # Step 4: Remove empty rows
+        df.dropna(how='all', inplace=True)
+
+        # Step 5: Remove duplicates if required
+        if remove_duplicates:
+            df.drop_duplicates(inplace=True)
+
+        # Step 6: Save the processed dataset as a new version
+        # Rename the file with _v1 at the end
+        original_filename = os.path.basename(result)
+        filename_without_ext, ext = os.path.splitext(original_filename)
+        new_filename = f"{filename_without_ext}_v1{ext}"
+
+        # Save the new file in the dataset/projectname/ folder
+        project_folder = os.path.dirname(result)
+        new_file_path = os.path.join(project_folder, new_filename)
+        print(f"New file path: {new_file_path}")
+        if ext == '.xlsx':
+            df.to_excel(new_file_path, index=False, engine='openpyxl')
+        elif ext == '.csv':
+            df.to_csv(new_file_path, index=False, encoding='utf-8')
+
+        # Step 7: Create version 1
+        version_1_id = version_model.create_version(
+            project_id=project_id,
+            description="Processed version with cleaned data",
+            files_path=new_file_path,
+            version_number= 1
+        )
+        if not version_1_id:
+            os.remove(new_file_path)
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to create version 1'
+            }), 500
+
+        # Step 8: Update the project with the new file path
+        project_updated = project_model.update_all_fields(
+            project_id=project_id,
+            update_fields={
+                "file_path": new_file_path,
+                "version_number": 1,
+                
+            }
+        )
+
+        if not project_updated:
+            os.remove(new_file_path)
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to update project with new file path'
+            }), 500
+
+        version_update_1 = project_model.append_version_info(
+            project_id=project_id,
+            version_entry={"v1": version_1_id}
+        )
+
+        # Add project to user's projects array
+        user_model.add_project(user_id, name, project_id)
+
+        return jsonify({
+            'status': 'success',
+            'message': 'File uploaded, processed, and project created successfully',
+            'project_id': project_id,
+            'version_0_id': version_0_id,
+            'version_1_id': version_1_id
+        }), 201
+
     except Exception as e:
-        logger.error(f"Error in upload_file: {str(e)}")
+        logger.error(f"Error in upload_dataset: {str(e)}")
         return jsonify({
             'status': 'error',
-            'message': 'An unexpected error occurred'
+            'message': 'An unexpected error occurred',
+            'details': str(e)
         }), 500
 
 @project_bp.route('/update_project/<project_id>', methods=['PUT'])
