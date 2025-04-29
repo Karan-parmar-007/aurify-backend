@@ -87,3 +87,105 @@ def get_column_names():
     except Exception as e:
         logger.error(f"Error reading file: {str(e)}")
         return jsonify({"error": "Error reading file", "details": str(e)}), 500
+
+@dataset_bp.route('/update_column_names', methods=['POST'])
+def update_column_names():
+    """
+    Update column names in the dataset file based on the provided mapping.
+    
+    Form Data:
+        - project_id: The ID of the project.
+        - mapped_columns: A nested dictionary containing old column names as keys and new column names as values.
+    
+    Returns:
+        JSON response with success message or error details.
+    """
+    try:
+        # Parse form data
+        project_id = request.form.get("project_id")
+        mapped_columns = request.form.get("mapped_columns")
+
+        if not project_id or not mapped_columns:
+            return jsonify({"error": "Missing required fields: project_id or mapped_columns"}), 400
+
+        # Convert mapped_columns from string to dictionary
+        try:
+            import json
+            column_mapping = json.loads(mapped_columns)
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid format for mapped_columns"}), 400
+
+        # Filter out mappings where the new column name is an empty string
+        filtered_mapping = {old: new for old, new in column_mapping.items() if new.strip()}
+
+        # Step 1: Fetch the project details
+        project = project_model.get_project(project_id)
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        file_path = project.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({"error": "File not found"}), 404
+
+        # Step 2: Load the dataset
+        try:
+            if file_path.endswith(".xlsx"):
+                df = pd.read_excel(file_path, dtype=str)
+            elif file_path.endswith(".csv"):
+                df = pd.read_csv(file_path, dtype=str)
+            else:
+                return jsonify({"error": "Unsupported file format"}), 400
+        except Exception as e:
+            logger.error(f"Error reading file: {str(e)}")
+            return jsonify({"error": "Error reading file", "details": str(e)}), 500
+
+        # Step 3: Update column names
+        df.rename(columns=filtered_mapping, inplace=True)
+
+        # Step 4: Save the updated dataset
+        original_filename = os.path.basename(file_path)
+        filename_without_ext, ext = os.path.splitext(original_filename)
+        new_filename = f"{filename_without_ext.replace('_v1', '')}_v2{ext}"
+
+        project_folder = os.path.dirname(file_path)
+        new_file_path = os.path.join(project_folder, new_filename)
+
+        if ext == ".xlsx":
+            df.to_excel(new_file_path, index=False, engine="openpyxl")
+        elif ext == ".csv":
+            df.to_csv(new_file_path, index=False, encoding="utf-8")
+
+        # Step 5: Add a new entry in the version model
+        version_model = VersionModel()
+        version_2_id = version_model.create_version(
+            project_id=project_id,
+            description="Updated column names",
+            files_path=new_file_path,
+            version_number=2
+        )
+        if not version_2_id:
+            os.remove(new_file_path)
+            return jsonify({"error": "Failed to create version 2"}), 500
+
+        # Step 6: Update the project with the new file path and version
+        update_success = project_model.update_all_fields(
+            project_id=project_id,
+            update_fields={
+                "file_path": new_file_path,
+                "version_number": 2
+            }
+        )
+        if not update_success:
+            os.remove(new_file_path)
+            return jsonify({"error": "Failed to update project with new file path and version"}), 500
+
+        return jsonify({
+            "status": "success",
+            "message": "Column names updated successfully",
+            "new_file_path": new_file_path,
+            "version_2_id": version_2_id
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error in update_column_names: {str(e)}")
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
