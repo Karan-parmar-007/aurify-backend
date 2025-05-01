@@ -8,6 +8,7 @@ import os
 from werkzeug.utils import secure_filename
 from flask import request, jsonify, send_file
 import pandas as pd
+from bson import ObjectId
 
 # Initialize models
 project_model = ProjectModel()
@@ -259,19 +260,23 @@ def partition_by_tags():
 
             # Create a new version for this partition
             version_number = float(f"2.{version_counter}")
+            # Add "sent_for_rule_addition": False for all except when tag_type_name == "Unknown"
+            version_extra = {}
+            if tag_type_name != "Unknown" or tag_name == "Untagged":
+                version_extra["sent_for_rule_addition"] = False
+
             version_id = version_model.create_version(
                 project_id=project_id,
                 description=f"Partitioned by {tag_name} - {tag_type_name}",
                 files_path=file_save_path,
-                version_number=version_number
+                version_number=version_number,
+                sent_for_rule_addition=version_extra.get("sent_for_rule_addition"),
+                tag_name=tag_name,
+                tag_type_name=tag_type_name
             )
             if version_id:
                 sub_versions.append({
-                    "version": version_id,
-                    "tag": tag_name,
-                    "tag_type": tag_type_name,
-                    "file_path": file_save_path,
-                    "version_number": version_number
+                    str(version_number): version_id
                 })
 
             # Update tag_groups info
@@ -291,13 +296,139 @@ def partition_by_tags():
             }
         )
 
-        return jsonify({
-            "status": "success",
-            "tag_groups": tag_groups
-        }), 200
+        # Fetch split files info (same as get_split_files_info)
+        split_files_info = []
+        for sub_version in sub_versions:
+            for version_number, version_id in sub_version.items():
+                version = version_model.collection.find_one({"_id": ObjectId(version_id)})
+                if not version:
+                    continue
+                tag_name = version.get("tag_name", "")
+                tag_type_name = version.get("tag_type_name", "")
+                file_path = version.get("files_path", "")
+                num_rows = 0
+                try:
+                    if file_path.endswith(".xlsx"):
+                        df = pd.read_excel(file_path, dtype=str)
+                    elif file_path.endswith(".csv"):
+                        df = pd.read_csv(file_path, dtype=str)
+                    else:
+                        df = None
+                    if df is not None:
+                        num_rows = len(df)
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {str(e)}")
+                    num_rows = -1
+
+                split_files_info.append({
+                    "tag_name": tag_name,
+                    "tag_type_name": tag_type_name,
+                    "file_path": file_path,
+                    "number_of_rows": num_rows,
+                    "version_id": str(version_id)
+                })
+
+        return jsonify(split_files_info), 200
 
     except Exception as e:
         logger.error(f"Error in partition_by_tags: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@dataset_bp.route('/get_split_files_info', methods=['GET'])
+def get_split_files_info():
+    """
+    Fetch info about all split files (sub_versions) for a project.
+    Only returns versions where sent_for_rule_addition is True.
+    """
+    try:
+        project_id = request.args.get('project_id')
+        if not project_id:
+            return jsonify({"error": "Missing Project ID"}), 400
+
+        # 1. Fetch project
+        project = project_model.get_project(project_id)
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        sub_versions = project.get("sub_versions", [])
+        if not sub_versions:
+            return jsonify({"error": "No split files found"}), 404
+
+        version_model = VersionModel()
+        split_files_info = []
+
+        for sub_version in sub_versions:
+            # sub_version is like {"2.1": "version_id"}
+            for version_number, version_id in sub_version.items():
+                version = version_model.collection.find_one({"_id": ObjectId(version_id)})
+                if not version or not version.get("sent_for_rule_addition", False):
+                    continue
+                tag_name = version.get("tag_name", "")
+                tag_type_name = version.get("tag_type_name", "")
+                file_path = version.get("files_path", "")
+
+                # Count rows in the file
+                num_rows = 0
+                try:
+                    if file_path.endswith(".xlsx"):
+                        df = pd.read_excel(file_path, dtype=str)
+                    elif file_path.endswith(".csv"):
+                        df = pd.read_csv(file_path, dtype=str)
+                    else:
+                        df = None
+                    if df is not None:
+                        num_rows = len(df)
+                except Exception as e:
+                    logger.error(f"Error reading file {file_path}: {str(e)}")
+                    num_rows = -1  # Indicate error
+
+                split_files_info.append({
+                    "tag_name": tag_name,
+                    "tag_type_name": tag_type_name,
+                    "file_path": file_path,
+                    "number_of_rows": num_rows,
+                    "version_id": str(version_id)
+                })
+
+        return jsonify(split_files_info), 200
+
+    except Exception as e:
+        logger.error(f"Error in get_split_files_info: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
+
+@dataset_bp.route('/set_sent_for_rule_addition', methods=['POST'])
+def set_sent_for_rule_addition():
+    """
+    Set sent_for_rule_addition to True for all provided version IDs.
+    Expects JSON: { "version_id": ["id1", "id2", ...] }
+    """
+    try:
+        data = request.json
+        version_ids = data.get("version_id")
+        if not version_ids or not isinstance(version_ids, list):
+            return jsonify({"error": "version_id must be a list of IDs"}), 400
+
+        version_model = VersionModel()
+        updated_ids = []
+        for vid in version_ids:
+            result = version_model.collection.update_one(
+                {"_id": ObjectId(vid)},
+                {"$set": {"sent_for_rule_addition": True}}
+            )
+            if result.modified_count > 0:
+                updated_ids.append(str(vid))
+
+        return jsonify({
+            "status": "success",
+            "updated_version_ids": updated_ids
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error in set_sent_for_rule_addition: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": f"Server error: {str(e)}"}), 500

@@ -12,7 +12,7 @@ class VersionModel:
         """Initialize the VersionModel with the 'versions' collection"""
         self.collection = db["versions"]
 
-    def create_version(self, project_id, description, files_path="", version_number=0):
+    def create_version(self, project_id, description, files_path="", version_number=0, sent_for_rule_addition=None, tag_name=None, tag_type_name=None):
         """
         Create a new version in the database with initial parameters.
 
@@ -20,6 +20,10 @@ class VersionModel:
             project_id (str): ID of the project associated with the version
             description (str): Description of the version
             files_path (str, optional): Path where files are stored. Defaults to empty string.
+            version_number (float|int, optional): Version number.
+            sent_for_rule_addition (bool, optional): Whether sent for rule addition (for subtypes).
+            tag_name (str, optional): Tag name for this version.
+            tag_type_name (str, optional): Tag type for this version.
 
         Returns:
             str|None: Inserted version ID as string, or None on error
@@ -31,6 +35,12 @@ class VersionModel:
                 "files_path": files_path,
                 "version_number": version_number,
             }
+            if sent_for_rule_addition is not None:
+                version_data["sent_for_rule_addition"] = sent_for_rule_addition
+            if tag_name is not None:
+                version_data["tag_name"] = tag_name
+            if tag_type_name is not None:
+                version_data["tag_type_name"] = tag_type_name
             version_data = add_timestamps(version_data)
             result = self.collection.insert_one(version_data)
             return str(result.inserted_id)
