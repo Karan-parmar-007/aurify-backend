@@ -189,3 +189,104 @@ def update_column_names():
     except Exception as e:
         logger.error(f"Error in update_column_names: {str(e)}")
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+    
+@dataset_bp.route('/partition_by_tags', methods=["POST"])
+def partition_by_tags():
+    '''
+    Partition the latest file from project and create separate versions for each tag, including untagged.
+    
+    Form Data:
+        - project_id: the ID of the project
+        
+    Returns:
+        JSON respones with success message along with partition information or error details
+    '''
+    
+    try:
+        #parse from data
+        data = request.json
+        project_id = data.get('project_id')
+        
+        if not project_id:
+            return jsonify({"error": "Missing Project ID"}), 400
+        
+        
+        # step 1: Fetch the project details
+        project = project_model.get_project(project_id)
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+        
+        file_path = project.get("file_path")
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({"error": "File not found"}), 404
+        
+
+        tag_column = 'Tags'
+        tag_type_column = 'Tag Type'
+        #step 2: Load the Dataset
+        try:
+            if file_path.endswith(".xlsx"):
+                df = pd.read_excel(file_path, dtype=str)
+            elif file_path.endswith(".csv"):
+                df = pd.read_csv(file_path, dtype=str)
+            else:
+                return jsonify({"error": "Unsupported file format"}), 400
+        except Exception as e:
+            logger.error(f"Error reading file: {str(e)}")
+            return jsonify({"error": "Error reading file", "details": str(e)}), 500
+        
+        #step 3: check if Tags and Tag Type columns exist
+        print('checking for tags and tags type columns')
+        if tag_column not in df.columns:
+            print(f'looking for {tag_column} in all columns: ', df.columns)
+            return jsonify({"error": f"Tags column not found in file {df.columns}"}), 400
+        if tag_type_column not in df.columns:
+            print(f'looking for {tag_type_column} in all columns: ', df.columns)
+            return jsonify({"error": f"Tags column not found in file"}), 400
+        
+        has_tag_type = tag_type_column and tag_type_column in df.columns
+        
+        #step 4: analyze tags
+        tag_groups = {}
+        for tag, group in df.groupby(tag_column):
+            tag_name = str(tag) if pd.notna(tag) else "Untagged"
+            if tag_name == "":
+                tag_name = "Untagged"
+                
+            # Get tag type if available
+            tag_type = "Unknown"
+            if has_tag_type:
+                if tag_type_column in group.columns:
+                    types = group[tag_type_column].dropna().value_counts()
+                    if not types.empty:
+                        tag_type = str(types.index[0])
+                    else:
+                        tag_type = "Unknown"
+                else:
+                    print(f"Warning: Tag type column '{tag_type_column}' not found in grouped data")
+            
+            # Convert NumPy types to Python native types
+            tag_groups[tag_name] = {
+                "entries": int(len(group)),
+                "tag_type": str(tag_type)
+            }
+        
+        if "Untagged" not in tag_groups:
+            untagged_count = df[tag_column].isna().sum() + (df[tag_column] == "").sum()
+            if untagged_count > 0:
+                tag_groups["Untagged"] = {
+                    "entries": int(untagged_count),
+                    "tag_type": "Untagged"
+                }
+
+        # Return the result
+        return jsonify({
+            "status": "success",
+            "tag_groups": tag_groups
+        }), 200
+    
+    except Exception as e:
+        print("Error in analyze_tags:", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Server error: {str(e)}"}), 500
