@@ -51,6 +51,7 @@ class ProjectModel:
                 "remove_duplicates": remove_duplicates,
                 "version_info": [],
                 "version_number": 0,
+                "sub_versions": [],  # <-- Added field
             }
             project_data = add_timestamps(project_data)
             result = self.collection.insert_one(project_data)
@@ -85,7 +86,8 @@ class ProjectModel:
             return False
 
     def delete_project(self, project_id):
-        """Delete a project from the database
+        """
+        Delete a project from the database
         
         Args:
             project_id (str): ID of the project to delete
@@ -175,4 +177,32 @@ class ProjectModel:
             return result.modified_count > 0
         except PyMongoError as e:
             logger.error(f"Database error while appending version_info to project {project_id}: {e}")
+            return False
+
+    def append_sub_version(self, project_id, sub_version_entry: dict) -> bool:
+        """
+        Append a new sub-version entry to the sub_versions list of a project.
+
+        Args:
+            project_id (str): ID of the project to update
+            sub_version_entry (dict): Dictionary to append to sub_versions (e.g., {"version": "version_id"})
+
+        Returns:
+            bool: True if the append operation is successful, False otherwise
+        """
+        try:
+            update_data = {
+                "updated_at": datetime.now()
+            }
+
+            result = self.collection.update_one(
+                {"_id": ObjectId(project_id)},
+                {
+                    "$push": {"sub_versions": sub_version_entry},
+                    "$set": update_data
+                }
+            )
+            return result.modified_count > 0
+        except PyMongoError as e:
+            logger.error(f"Database error while appending sub_version to project {project_id}: {e}")
             return False
